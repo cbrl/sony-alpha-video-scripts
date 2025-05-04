@@ -12,74 +12,90 @@ def sony_xml_to_xmp(input_file: str) -> str:
 	Returns:
 		str: XMP formatted metadata as string
 	"""
-	# Register the namespaces used in Sony XML
-	namespaces = {
-		'sony': 'urn:schemas-professionalDisc:nonRealTimeMeta:ver.2.20',
-		'lib': 'urn:schemas-professionalDisc:lib:ver.2.10',
-		'xsi': 'http://www.w3.org/2001/XMLSchema-instance'
-	}
 
 	# Parse the XML file
 	tree = ET.parse(input_file)
 	root = tree.getroot()
 
-	# Extract metadata using namespaces
-	creation_date = root.find('.//sony:CreationDate', namespaces).attrib.get('value', '')
+	# Define the namespaces
+	# The XML file has a default namespace of something like urn:schemas-professionalDisc:nonRealTimeMeta:ver.2.00,
+	# but the version number may be different in different cameras. Since the namespace is not needed for parsing,
+	# we can ignore it by using a wildcard.
+	namespaces = {
+		'any': '*'
+	}
 
-	# Get video information
-	video_layout = root.find('.//sony:VideoLayout', namespaces)
-	pixel_x = video_layout.attrib.get('pixel', '0') if video_layout is not None else '0'
-	pixel_y = video_layout.attrib.get('numOfVerticalLine', '0') if video_layout is not None else '0'
+	xmp_elements = []
 
-	video_frame = root.find('.//sony:VideoFrame', namespaces)
-	capture_fps = video_frame.attrib.get('captureFps', '0') if video_frame is not None else '0'
+	if (creation_date := root.find('./any:CreationDate', namespaces)) is not None:
+		date = creation_date.attrib.get('value', '')
+		xmp_elements.append(f'<xmp:CreateDate>{date}</xmp:CreateDate>')
+	else:
+		raise ValueError("No creation date found in the XML file.")
 
 	# Get device information
-	device = root.find('.//sony:Device', namespaces)
-	manufacturer = device.attrib.get('manufacturer', '') if device is not None else ''
-	model_name = device.attrib.get('modelName', '') if device is not None else ''
-	serial_no = device.attrib.get('serialNo', '') if device is not None else ''
+	if (device := root.find('./any:Device', namespaces)) is not None:
+		manufacturer = device.attrib.get('manufacturer', '')
+		model_name = device.attrib.get('modelName', '')
+		serial_no = device.attrib.get('serialNo', '')
 
-	# Get GPS information
-	lat_str = lon_str = ''
-	lat_ref = lon_ref = ''
-	gps_group = root.find(".//sony:Group[@name='ExifGPS']", namespaces)
-	if gps_group is not None:
-		for item in gps_group.findall('.//sony:Item', namespaces):
-			if item.attrib.get('name') == 'Latitude':
+		xmp_elements.append(f'<tiff:Make>{manufacturer}</tiff:Make>')
+		xmp_elements.append(f'<tiff:Model>{model_name}</tiff:Model>')
+		xmp_elements.append(f'<tiff:SerialNumber>{serial_no}</tiff:SerialNumber>')
+		xmp_elements.append(f'<xmp:CreatorTool>{manufacturer} {model_name}</xmp:CreatorTool>')
+		xmp_elements.append(f'<xmpDM:cameraModel>{manufacturer} {model_name}</xmpDM:cameraModel>')
+	else:
+		raise ValueError("No device information found in the XML file.")
+
+	# Get video information
+	if (video_layout := root.find('.//any:VideoLayout', namespaces)) is not None:
+		pixel_x = video_layout.attrib.get('pixel', '0')
+		pixel_y = video_layout.attrib.get('numOfVerticalLine', '0')
+		xmp_elements.append(f'<exif:PixelXDimension>{pixel_x}</exif:PixelXDimension>')
+		xmp_elements.append(f'<exif:PixelYDimension>{pixel_y}</exif:PixelYDimension>')
+	else:
+		raise ValueError("No video layout found in the XML file.")
+
+	if (video_frame := root.find('.//any:VideoFrame', namespaces)) is not None:
+		capture_fps = video_frame.attrib.get('captureFps', '0')
+		xmp_elements.append(f'<xmpDM:videoFrameRate>{capture_fps}</xmpDM:videoFrameRate>')
+	else:
+		raise ValueError("No video frame found in the XML file.")
+
+	# Get GPS information (may not be present)
+	if (gps_group := root.find(".//any:Group[@name='ExifGPS']", namespaces)) is not None:
+		lat_str = lon_str = ''
+		lat_ref = lon_ref = ''
+
+		for item in gps_group.findall('.//Item', None):
+			name = item.attrib.get('name', '')
+			if name == 'Latitude':
 				lat_str = item.attrib.get('value', '')
-			elif item.attrib.get('name') == 'Longitude':
+			elif name == 'Longitude':
 				lon_str = item.attrib.get('value', '')
-			elif item.attrib.get('name') == 'LatitudeRef':
+			elif name == 'LatitudeRef':
 				lat_ref = item.attrib.get('value', '')
-			elif item.attrib.get('name') == 'LongitudeRef':
+			elif name == 'LongitudeRef':
 				lon_ref = item.attrib.get('value', '')
 
-	# Convert DMS to DDM
-	gps_latitude = gps_decimal_to_ddm(gps_dms_to_decimal(lat_str, ';', lat_ref), True, ',')
-	gps_longitude = gps_decimal_to_ddm(gps_dms_to_decimal(lon_str, ';', lon_ref), False, ',')
+		# Convert DMS to DDM
+		gps_latitude = gps_decimal_to_ddm(gps_dms_to_decimal(lat_str, ';', lat_ref), True, ',')
+		gps_longitude = gps_decimal_to_ddm(gps_dms_to_decimal(lon_str, ';', lon_ref), False, ',')
+
+		xmp_elements.append(f'<exif:GPSLatitude>{gps_latitude}</exif:GPSLatitude>')
+		xmp_elements.append(f'<exif:GPSLongitude>{gps_longitude}</exif:GPSLongitude>')
 
 	# Create the XMP content
 	xmp_content = f'''<?xpacket begin="{"\xEF\xBB\xBF"}" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="XMP Core 6.0.0">
   <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-	<rdf:Description rdf:about=""
-	  xmlns:xmp="http://ns.adobe.com/xap/1.0/"
-	  xmlns:exif="http://ns.adobe.com/exif/1.0/"
-	  xmlns:tiff="http://ns.adobe.com/tiff/1.0/"
-	  xmlns:xmpDM="http://ns.adobe.com/xmp/1.0/DynamicMedia/">
-		<xmp:CreateDate>{creation_date}</xmp:CreateDate>
-		<xmp:CreatorTool>{manufacturer} {model_name}</xmp:CreatorTool>
-		<tiff:Make>{manufacturer}</tiff:Make>
-		<tiff:Model>{model_name}</tiff:Model>
-		<tiff:SerialNumber>{serial_no}</tiff:SerialNumber>
-		<exif:PixelXDimension>{pixel_x}</exif:PixelXDimension>
-		<exif:PixelYDimension>{pixel_y}</exif:PixelYDimension>
-		<exif:GPSLatitude>{gps_latitude}</exif:GPSLatitude>
-		<exif:GPSLongitude>{gps_longitude}</exif:GPSLongitude>
-		<xmpDM:cameraModel>{manufacturer} {model_name}</xmpDM:cameraModel>
-		<xmpDM:videoFrameRate>{capture_fps}</xmpDM:videoFrameRate>
-	</rdf:Description>
+    <rdf:Description rdf:about=""
+      xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+      xmlns:exif="http://ns.adobe.com/exif/1.0/"
+      xmlns:tiff="http://ns.adobe.com/tiff/1.0/"
+      xmlns:xmpDM="http://ns.adobe.com/xmp/1.0/DynamicMedia/">
+        {'\n        '.join(xmp_elements)}
+    </rdf:Description>
   </rdf:RDF>
 </x:xmpmeta>
 <?xpacket end='w'?>'''
